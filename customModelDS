@@ -1,0 +1,161 @@
+import tensorflow as tf
+
+class PostExtractorBlock(tf.keras.layers.Layer):
+    def __init__(self, units, name=None):
+        super().__init__(name=name)
+        self.dense1 = tf.keras.layers.Dense(units, activation='relu')
+        self.dense2 = tf.keras.layers.Dense(units, activation='relu')
+        self.dense3 = tf.keras.layers.Dense(units, activation='relu')
+    
+    def call(self, inputs):
+        x = self.dense1(inputs)
+        x = self.dense2(x)
+        return self.dense3(x)
+
+class MyCustomModel(tf.keras.Model):
+    def __init__(self, extractors, fusion_method="average", branch_units=128, name=None):
+        super().__init__(name=name)
+        self.extractors = extractors
+        self.fusion_method = fusion_method
+        self.branch_units = branch_units
+        self.num_extractors = len(extractors)
+        
+        # Post-extractor blocks
+        self.post_blocks = [
+            PostExtractorBlock(branch_units, name=f"post_block_{i}") 
+            for i in range(self.num_extractors)
+        ]
+        
+        # Fusion layers
+        if fusion_method == "attention":
+            self.att_query = tf.keras.layers.Dense(branch_units)
+            self.att_key = tf.keras.layers.Dense(branch_units)
+            self.att_value = tf.keras.layers.Dense(branch_units)
+        
+        # Classification head
+        self.head_dense1 = tf.keras.layers.Dense(128, activation='relu')
+        self.head_bn1 = tf.keras.layers.BatchNormalization()
+        self.head_drop1 = tf.keras.layers.Dropout(0.4)
+        self.head_dense2 = tf.keras.layers.Dense(64, activation='relu')
+        self.head_bn2 = tf.keras.layers.BatchNormalization()
+        self.head_drop2 = tf.keras.layers.Dropout(0.3)
+        self.head_output = tf.keras.layers.Dense(1, activation='sigmoid')
+    
+    def call(self, inputs):
+        batch_size = tf.shape(inputs)[0]
+        num_windows = tf.shape(inputs)[1]
+        
+        # Reshape to process windows independently
+        flat_inputs = tf.reshape(inputs, [-1, 512])
+        
+        # Process each extractor branch
+        branch_outputs = []
+        for i, extractor in enumerate(self.extractors):
+            # Feature extraction
+            features = extractor(flat_inputs)
+            
+            # Post-processing
+            processed = self.post_blocks[i](features)
+            
+            # Reshape back to (batch, num_windows, branch_units)
+            windowed = tf.reshape(
+                processed, 
+                [batch_size, num_windows, self.branch_units]
+            )
+            
+            # Aggregate (mean over windows)
+            branch_mean = tf.reduce_mean(windowed, axis=1)
+            branch_outputs.append(branch_mean)
+        
+        # Stack branch outputs: (batch, num_branches, branch_units)
+        fused_input = tf.stack(branch_outputs, axis=1)
+        
+        # Fusion
+        if self.fusion_method == "average":
+            fused = tf.reduce_mean(fused_input, axis=1)
+        elif self.fusion_method == "attention":
+            # Single-head attention
+            Q = self.att_query(fused_input)  # (batch, num_branches, units)
+            K = self.att_key(fused_input)    # (batch, num_branches, units)
+            V = self.att_value(fused_input)  # (batch, num_branches, units)
+            
+            # Attention scores
+            scores = tf.matmul(Q, K, transpose_b=True)  # (batch, num_branches, num_branches)
+            scaled_scores = scores / tf.math.sqrt(tf.cast(self.branch_units, tf.float32))
+            weights = tf.nn.softmax(scaled_scores, axis=-1)
+            
+            # Weighted sum
+            fused = tf.matmul(weights, V)  # (batch, num_branches, units)
+            fused = tf.reduce_mean(fused, axis=1)  # (batch, units)
+        
+        # Classification head
+        x = self.head_dense1(fused)
+        x = self.head_bn1(x)
+        x = self.head_drop1(x)
+        x = self.head_dense2(x)
+        x = self.head_bn2(x)
+        x = self.head_drop2(x)
+        return self.head_output(x)
+
+def main():
+    # Dummy feature extractors (for demonstration)
+    def extractor1(x): return tf.keras.layers.Dense(64)(x)
+    def extractor2(x): return tf.keras.layers.Dense(72)(x)
+    def extractor3(x): return tf.keras.layers.Dense(80)(x)
+    def extractor4(x): return tf.keras.layers.Dense(88)(x)
+    extractors = [extractor1, extractor2, extractor3, extractor4]
+    
+    # Create model
+    model = MyCustomModel(
+        extractors=extractors,
+        fusion_method="attention",
+        branch_units=128
+    )
+    
+    # Dummy input
+    dummy_input = tf.random.normal([4, 32, 512])  # (batch, windows, 512)
+    
+    # Forward pass
+    output = model(dummy_input)
+    print("Output shape:", output.shape)
+
+def main2():
+    # Define extractors as actual Keras layers (not functions)
+    extractor1 = tf.keras.layers.Dense(64)
+    extractor2 = tf.keras.layers.Dense(72)
+    extractor3 = tf.keras.layers.Dense(80)
+    extractor4 = tf.keras.layers.Dense(88)
+    extractors = [extractor1, extractor2, extractor3, extractor4]
+    
+    # Create model
+    model = MyCustomModel(
+        extractors=extractors,
+        fusion_method="attention",
+        branch_units=128,
+        name="WindowProcessingModel"
+    )
+    
+    # Dummy input
+    dummy_input = tf.random.normal([4, 32, 512])
+    
+    # Forward pass to build model
+    output = model(dummy_input)
+    print("Output shape:", output.shape)
+    
+    # Visualize model
+    print("\nModel Summary:")
+    model.summary(show_trainable=True)
+    
+    # Save plot to file
+    plot_model(
+        model,
+        to_file="model_diagram.png",
+        show_shapes=True,
+        show_layer_names=True,
+        expand_nested=True,
+        dpi=96
+    )
+    print("\nModel diagram saved to 'model_diagram.png'")
+
+if __name__ == "__main__":
+    main()
