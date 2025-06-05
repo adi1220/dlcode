@@ -379,6 +379,37 @@ class AudioDataLoaderTester:
         except Exception as e:
             print(f"✗ Classification mode test failed: {e}")
     
+    def simple_shape_test(self, event_csv, bg_csv):
+        """Simple test to check dataset output shapes."""
+        print("\n--- Simple Shape Test ---")
+        try:
+            
+            
+            # Create loader
+            loader = AdvancedAudioDataLoader(
+                event_csv,
+                bg_csv,
+                duration=2.0,
+                sample_rate=16000,
+                classification_mode='sigmoid',
+                pairing_mode='random'
+            )
+            
+            # Create dataset
+            train_ds = loader.create_dataset(batch_size=8, shuffle=True)
+            
+            # Test loop - exactly what you wanted
+            for x, y in train_ds.take(1):
+                print(f"Audio batch shape: {x.shape}")
+                print(f"Label batch shape: {y.shape}")
+                print(f"Audio dtype: {x.dtype}")
+                print(f"Label dtype: {y.dtype}")
+                print(f"Sample labels: {y.numpy()}")
+                break
+                
+        except Exception as e:
+            print(f"✗ Simple shape test failed: {e}")
+    
     def cleanup(self):
         """Clean up test directory."""
         if os.path.exists(self.test_dir):
@@ -404,7 +435,6 @@ def run_all_tests():
             num_backgrounds=15
         )
         
-        # Import the loader
         # Test 1: Basic functionality with augmentations
         print("\n" + "=" * 40)
         aug_config = {
@@ -492,6 +522,10 @@ def run_all_tests():
             augmentation_config={'mixing': {'snr_range_db': [10, 10]}}
         )
         print("  ✓ Sequential pairing mode working")
+        
+        # Test 6: Simple shape test
+        print("\n" + "=" * 40)
+        tester.simple_shape_test(train_event_csv, train_bg_csv)
         
         # Performance test
         print("\n" + "=" * 40)
