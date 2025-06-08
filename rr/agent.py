@@ -38,6 +38,7 @@ class RewriterAgent(Agent):
         self.config: RunnableConfig = {"callbacks": [CallbackHandler()]}
 
     def classify_node(self, state: RewriteState) -> RewriteState:
+        """Classify the user query to determine type and difficulty."""
         messages = [
             {"role": "system", "content": CLASSIFIER_PROMPT},
             {"role": "user", "content": [{"text": state.user_text, "type": "text"}]},
@@ -54,6 +55,7 @@ class RewriterAgent(Agent):
         return state
 
     def personality_node(self, state: RewriteState) -> RewriteState:
+        """Generate personality based on query difficulty and Bixby's characteristics."""
         master_personality = """
         Name: Bixby
         Occupation: Mascot
@@ -66,7 +68,7 @@ class RewriterAgent(Agent):
 
         difficulty_map = {"PRIMARY_SCHOOL": 1, "MIDDLE_SCHOOL": 2, "HIGH_SCHOOL": 3, "UNIVERSITY": 4, "PHD": 5}
 
-        agent_diff = 2  # UNIVERSITY level
+        agent_diff = 4  # UNIVERSITY level
         query_diff = difficulty_map.get(state.query_difficulty, agent_diff)
 
         if query_diff < agent_diff:
@@ -114,31 +116,45 @@ class RewriterAgent(Agent):
         return state
 
     def rewrite_node(self, state: RewriteState) -> RewriteState:
+        """Rewrite the response using the appropriate prompt strategy."""
         # Check for prompt override in config
         config = getattr(self, '_current_config', self.config)
         
         # Determine which prompt to use
         if config and 'override_prompt' in config:
-            # Use the provided prompt override
+            # Use the provided prompt override directly
             prompt_template = config['override_prompt']
+            strategy_used = config.get('prompt_strategy', 'custom')
         elif config and 'use_smart_selection' in config:
             # Use smart prompt selection
             special_case = self.detect_special_case(state.user_text, state.bixby_text)
             prompt_template = get_prompt_for_situation(
-                query_type=state.query_type,
-                difficulty=state.query_difficulty,
+                query_type=str(state.query_type),
+                difficulty=str(state.query_difficulty),
                 special_case=special_case
             )
+            strategy_used = 'smart_selection'
+            # Log which prompt was selected
+            for name, template in PROMPT_MAP.items():
+                if template == prompt_template:
+                    strategy_used = f'smart_{name}'
+                    break
         elif config and 'prompt_strategy' in config:
             # Use specific strategy
             strategy = config['prompt_strategy']
             if strategy == 'hybrid':
                 prompt_template = HYBRID_PROMPT
+                strategy_used = 'hybrid'
             else:
                 prompt_template = PROMPT_MAP.get(strategy, REWRITER_PROMPT)
+                strategy_used = strategy
         else:
             # Default behavior - use the default prompt
             prompt_template = REWRITER_PROMPT
+            strategy_used = 'default'
+        
+        # Store the strategy used for later reference
+        state.prompt_strategy_used = strategy_used
         
         messages = [
             {
@@ -168,14 +184,14 @@ class RewriterAgent(Agent):
         return state
 
     def detect_special_case(self, user_text: str, bixby_text: str) -> Optional[str]:
-        """Detect if this needs special handling."""
+        """Detect if this query needs special handling."""
         # Error patterns
-        error_keywords = ["error", "not found", "cannot", "failed", "unable", "no device"]
+        error_keywords = ["error", "not found", "cannot", "failed", "unable", "no device", "can't"]
         if any(keyword in bixby_text.lower() for keyword in error_keywords):
             return "error"
         
         # Sensitive topics
-        sensitive_keywords = ["health", "medical", "personal", "private", "death", "suicide"]
+        sensitive_keywords = ["health", "medical", "personal", "private", "death", "suicide", "therapy", "depression"]
         if any(keyword in user_text.lower() for keyword in sensitive_keywords):
             return "sensitive"
         
@@ -183,10 +199,16 @@ class RewriterAgent(Agent):
         if len(user_text.split()) < 3 and "?" not in user_text:
             return "ambiguous"
         
+        # Complex technical queries
+        technical_keywords = ["algorithm", "quantum", "neural", "blockchain", "cryptography"]
+        if any(keyword in user_text.lower() for keyword in technical_keywords):
+            return "technical"
+        
         return None
 
     @override
     def build_graph(self) -> CompiledStateGraph:
+        """Build the processing graph for the rewriter agent."""
         graph_builder = StateGraph(RewriteState)
         graph_builder.add_node("classify_node", self.classify_node)
         graph_builder.add_node("personality_node", self.personality_node)
@@ -200,6 +222,7 @@ class RewriterAgent(Agent):
 
     @override
     def invoke_graph(self, state: BaseModel, config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
+        """Invoke the graph with optional config for prompt strategy selection."""
         # Store the config for use in nodes
         self._current_config = config if config is not None else self.config
         
@@ -212,6 +235,38 @@ class RewriterAgent(Agent):
 
     @override
     def act(self, user_id: str, thread_id: str, messages: InputSchema) -> OutputSchema:
-        # This method can be updated to support prompt strategy selection
-        # For now, it maintains backward compatibility
-        pass
+        """Process messages and return rewritten response."""
+        # Extract the last user message and any previous assistant response
+        user_text = ""
+        bixby_text = ""
+        
+        for msg in messages.messages:
+            if msg.role == "user":
+                user_text = msg.content
+            elif msg.role == "assistant":
+                bixby_text = msg.content
+        
+        # Create state
+        state = RewriteState(
+            user_text=user_text,
+            bixby_text=bixby_text
+        )
+        
+        # Check if there's a prompt strategy specified in the messages
+        config = self.config.copy()
+        
+        # You can pass strategy through message metadata if needed
+        # For example, if messages have a metadata field with prompt_strategy
+        
+        # Invoke the graph
+        result = self.invoke_graph(state, config)
+        
+        # Return the rewritten response
+        return OutputSchema(
+            output=result.rewritten_text if hasattr(result, 'rewritten_text') else "I couldn't process that request.",
+            metadata={
+                "query_type": str(result.query_type) if hasattr(result, 'query_type') else "unknown",
+                "difficulty": str(result.query_difficulty) if hasattr(result, 'query_difficulty') else "unknown",
+                "prompt_strategy": getattr(result, 'prompt_strategy_used', 'default')
+            }
+        )
