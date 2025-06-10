@@ -219,6 +219,12 @@ class AudioFeatureModel(tf.keras.Model):
         self.extractor_block_centroid = FeatureExtractorBlock(feature_dim, name_suffix="centroid")
         self.extractor_block_rolloff = FeatureExtractorBlock(feature_dim, name_suffix="rolloff")
         
+        # Batch normalization layers for each branch
+        self.norm_zcr = tf.keras.layers.BatchNormalization(name='norm_zcr')
+        self.norm_rms = tf.keras.layers.BatchNormalization(name='norm_rms')
+        self.norm_centroid = tf.keras.layers.BatchNormalization(name='norm_centroid')
+        self.norm_rolloff = tf.keras.layers.BatchNormalization(name='norm_rolloff')
+        
         # Fusion layer
         if fusion_method == "attention":
             self.fusion_layer = SingleHeadAttention(feature_dim)
@@ -314,6 +320,18 @@ class AudioFeatureModel(tf.keras.Model):
             features_rms = self.process_feature_branch(rms, self.rms_processor, self.extractor_block_rms)
             features_centroid = self.process_feature_branch(spectral_centroid, self.centroid_processor, self.extractor_block_centroid)
             features_rolloff = self.process_feature_branch(spectral_rolloff, self.rolloff_processor, self.extractor_block_rolloff)
+            
+            # Apply normalization to each feature branch
+            features_zcr = self.norm_zcr(tf.expand_dims(features_zcr, 0), training=training)
+            features_rms = self.norm_rms(tf.expand_dims(features_rms, 0), training=training)
+            features_centroid = self.norm_centroid(tf.expand_dims(features_centroid, 0), training=training)
+            features_rolloff = self.norm_rolloff(tf.expand_dims(features_rolloff, 0), training=training)
+            
+            # Remove the extra dimension added for batch norm
+            features_zcr = tf.squeeze(features_zcr, 0)
+            features_rms = tf.squeeze(features_rms, 0)
+            features_centroid = tf.squeeze(features_centroid, 0)
+            features_rolloff = tf.squeeze(features_rolloff, 0)
             
             # Stack all features for fusion
             all_features = tf.stack([features_zcr, features_rms, features_centroid, features_rolloff], axis=0)
@@ -440,11 +458,17 @@ def create_functional_audio_model(sampling_rate=16000,
     centroid_processed = create_branch(centroid_branch, 'centroid')
     rolloff_processed = create_branch(rolloff_branch, 'rolloff')
     
+    # Add normalization layers
+    zcr_normalized = tf.keras.layers.BatchNormalization(name='norm_zcr')(zcr_processed)
+    rms_normalized = tf.keras.layers.BatchNormalization(name='norm_rms')(rms_processed)
+    centroid_normalized = tf.keras.layers.BatchNormalization(name='norm_centroid')(centroid_processed)
+    rolloff_normalized = tf.keras.layers.BatchNormalization(name='norm_rolloff')(rolloff_processed)
+    
     # Stack for fusion
     stacked = tf.keras.layers.Lambda(
         lambda x: tf.stack(x, axis=1),
         name='stack_branches'
-    )([zcr_processed, rms_processed, centroid_processed, rolloff_processed])
+    )([zcr_normalized, rms_normalized, centroid_normalized, rolloff_normalized])
     
     # Fusion
     if fusion_method == "attention":
@@ -650,8 +674,9 @@ def visualize_audio_model(model, model_name, save_dir="audio_model_visualization
             'input': 0.9,
             'features': 0.75,
             'branches': 0.5,
-            'fusion': 0.25,
-            'classifier': 0.1
+            'normalization': 0.35,
+            'fusion': 0.2,
+            'classifier': 0.05
         }
         
         # Draw boxes
@@ -662,6 +687,10 @@ def visualize_audio_model(model, model_name, save_dir="audio_model_visualization
             ('RMS\nBranch', 0.35, y_positions['branches'], 'lightgreen'),
             ('Centroid\nBranch', 0.55, y_positions['branches'], 'lightgreen'),
             ('Rolloff\nBranch', 0.75, y_positions['branches'], 'lightgreen'),
+            ('BatchNorm\nZCR', 0.15, y_positions['normalization'], 'lightcyan'),
+            ('BatchNorm\nRMS', 0.35, y_positions['normalization'], 'lightcyan'),
+            ('BatchNorm\nCentroid', 0.55, y_positions['normalization'], 'lightcyan'),
+            ('BatchNorm\nRolloff', 0.75, y_positions['normalization'], 'lightcyan'),
             ('Feature Fusion\n(Attention/Average)', 0.5, y_positions['fusion'], 'lightcoral'),
             ('Classification Head\n(Dense → BatchNorm → Dropout)', 0.5, y_positions['classifier'], 'plum')
         ]
@@ -680,10 +709,14 @@ def visualize_audio_model(model, model_name, save_dir="audio_model_visualization
             (0.5, y_positions['features']-0.03, 0.35, y_positions['branches']+0.03),
             (0.5, y_positions['features']-0.03, 0.55, y_positions['branches']+0.03),
             (0.5, y_positions['features']-0.03, 0.75, y_positions['branches']+0.03),
-            (0.15, y_positions['branches']-0.03, 0.5, y_positions['fusion']+0.03),
-            (0.35, y_positions['branches']-0.03, 0.5, y_positions['fusion']+0.03),
-            (0.55, y_positions['branches']-0.03, 0.5, y_positions['fusion']+0.03),
-            (0.75, y_positions['branches']-0.03, 0.5, y_positions['fusion']+0.03),
+            (0.15, y_positions['branches']-0.03, 0.15, y_positions['normalization']+0.03),
+            (0.35, y_positions['branches']-0.03, 0.35, y_positions['normalization']+0.03),
+            (0.55, y_positions['branches']-0.03, 0.55, y_positions['normalization']+0.03),
+            (0.75, y_positions['branches']-0.03, 0.75, y_positions['normalization']+0.03),
+            (0.15, y_positions['normalization']-0.03, 0.5, y_positions['fusion']+0.03),
+            (0.35, y_positions['normalization']-0.03, 0.5, y_positions['fusion']+0.03),
+            (0.55, y_positions['normalization']-0.03, 0.5, y_positions['fusion']+0.03),
+            (0.75, y_positions['normalization']-0.03, 0.5, y_positions['fusion']+0.03),
             (0.5, y_positions['fusion']-0.03, 0.5, y_positions['classifier']+0.03)
         ]
         
@@ -695,7 +728,8 @@ def visualize_audio_model(model, model_name, save_dir="audio_model_visualization
         ax.set_ylim(0, 1)
         ax.set_aspect('equal')
         ax.axis('off')
-        ax.set_title(f'Audio Feature Model Architecture - {model_name}', fontsize=16, weight='bold', pad=20)
+        ax.set_title(f'Audio Feature Model Architecture with Batch Normalization - {model_name}', 
+                     fontsize=16, weight='bold', pad=20)
         
         diagram_path = os.path.join(save_dir, f"{model_name}_custom_diagram.png")
         plt.tight_layout()
@@ -712,7 +746,7 @@ def visualize_audio_model(model, model_name, save_dir="audio_model_visualization
 # Example usage and testing
 def test_audio_feature_model():
     """Test the audio feature model with dummy data."""
-    print("Testing Audio Feature Model...")
+    print("Testing Audio Feature Model with Batch Normalization...")
     print("="*60)
     
     # Model parameters
@@ -795,13 +829,13 @@ def test_audio_feature_model():
     dummy_input = tf.random.uniform((1, 16000), dtype=tf.float32)  # 1 second of audio
     _ = model_attention(dummy_input)
     # Visualize attention model
-    save_dir_att = visualize_audio_model(model_attention, "AudioModel_Attention")
+    save_dir_att = visualize_audio_model(model_attention, "AudioModel_Attention_BN")
     
     # Visualize average model  
-    save_dir_avg = visualize_audio_model(model_average, "AudioModel_Average")
+    save_dir_avg = visualize_audio_model(model_average, "AudioModel_Average_BN")
     
     # Visualize functional model
-    save_dir_func = visualize_audio_model(functional_model, "AudioModel_Functional")
+    save_dir_func = visualize_audio_model(functional_model, "AudioModel_Functional_BN")
     
     return model_attention, model_average, functional_model
 
@@ -812,12 +846,17 @@ if __name__ == '__main__':
     
     print("\n" + "="*60)
     print("✅ All tests passed successfully!")
-    print("\nThe model now:")
-    print("1. Takes raw audio as input")
-    print("2. Extracts 4 audio features (ZCR, RMS, Spectral Centroid, Spectral Rolloff)")
-    print("3. Processes each feature through its own branch")
-    print("4. Fuses the branches using attention or average")
-    print("5. Outputs classification predictions")
+    print("\nThe model now includes:")
+    print("1. Raw audio input processing")
+    print("2. Four audio feature extraction branches (ZCR, RMS, Spectral Centroid, Spectral Rolloff)")
+    print("3. Batch normalization after each feature branch")
+    print("4. Feature fusion using attention or average pooling")
+    print("5. Classification head with batch normalization and dropout")
+    print("\nBatch normalization benefits:")
+    print("- Normalizes features across different scales")
+    print("- Improves training stability")
+    print("- Faster convergence")
+    print("- Acts as regularization")
     print("\nVisualization files created:")
     print("- Architecture diagrams (PNG)")
     print("- SavedModel format (for TensorFlow Serving)")
