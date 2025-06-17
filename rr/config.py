@@ -171,8 +171,8 @@ ARENA_DB_PATH=data/arena_battles.json
 
 # Cache Configuration
 ENABLE_CACHE=True
-CACHE_MAX_SIZE=1000
-CACHE_TTL=3600
+CACHE_MAX_SIZE=10000
+CACHE_TTL=7200
 
 # Arena Configuration
 ARENA_INITIAL_ELO=1500
