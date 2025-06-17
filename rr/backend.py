@@ -347,6 +347,14 @@ def get_stats():
         }
     })
 
+@app.after_request
+def log_performance(response):
+    if hasattr(g, 'start_time'):
+        duration = time.time() - g.start_time
+        if duration > 3:
+            logger.warning(f"Slow request: {duration:.2f}s - {request.path}")
+    return response
+    
 # Error handlers
 @app.errorhandler(404)
 def not_found(error):
